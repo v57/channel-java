@@ -17,32 +17,42 @@ implementation("v57.channel:channel-java-client:VERSION")
 # Usage
 
 ```java
-// Client
+// Server: single-threaded, drive it with poll()
 import v57.channel.Channel;
-import v57.channel.client.ChannelClient;
 
-var client = ChannelClient.connect(new Channel<Void>(), 2049);
-String response = client.send(String.class, "hello", "hi").get();
+var server = new Channel<Void>()
+    .post("hello", String.class, request -> "world")
+    .listen(2049);
 
-try (var values = client.values(String.class, "stream/values")) {
-  while (true) {
-    var next = values.next().get();
-    if (next.done()) break;
-    System.out.println(next.value());
-  }
+while (true) {
+  if (!server.poll()) Thread.onSpinWait();
 }
 ```
 
 ```java
-// Server
+// Client: send() and values().next() block and pump the connection themselves
 import v57.channel.Channel;
-import v57.channel.server.ChannelServer;
+import v57.channel.StreamNext;
 
-var server = ChannelServer.listen(
-    new Channel<Void>().post("hello", body -> "world"),
-    2049
-);
+try (var client = new Channel<Void>().connect(2049)) {
+  var result = client.sender().send(String.class, "hello", "hi"); // CallResult<String>
+  if (result.isOk()) System.out.println(result.value());
+  else System.err.println(result.remoteErr());
+
+  try (var values = client.sender().values(Integer.class, "stream/values")) {
+    while (true) {
+      StreamNext<Integer> next = values.next();
+      if (!next.isItem()) break; // done or remoteErr
+      System.out.println(next.item());
+    }
+  }
+}
 ```
+
+Limits: websocket messages (single or fragmented) above 16 MiB and HTTP upgrade heads above 64 KiB drop the
+connection. Change the message cap with `new ListenOptions<>(...).withMaxPayload(bytes)` /
+`new ConnectOptions<>(...).withMaxPayload(bytes)`. A peer that sends a malformed frame, invalid JSON or JSON nested
+deeper than 512 levels is disconnected; on the client, pending calls then fail with `disconnected`.
 
 # Modules
 - `channel-java-core`
@@ -54,7 +64,7 @@ var server = ChannelServer.listen(
 
 # Stack
 - JSON codec: `DSL-JSON`
-- WebSocket client/server: `Netty`
+- WebSocket client/server: hand-written on `java.nio` (no Netty)
 - Build: `Gradle` multi-module, Java toolchain `21`
 
 # Scripts
