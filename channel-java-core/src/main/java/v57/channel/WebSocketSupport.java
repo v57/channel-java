@@ -82,7 +82,22 @@ final class WebSocketSupport {
     return buffer;
   }
 
+  /** Default cap for one websocket message (frame or reassembled fragments). Matches Bun's 16 MiB default. */
+  static final int DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
+  /** Cap for the HTTP upgrade request/response head. */
+  static final int MAX_HANDSHAKE_BYTES = 64 * 1024;
+
   static Frame decode(byte[] bytes, int length) {
+    return decode(bytes, length, DEFAULT_MAX_PAYLOAD);
+  }
+
+  /**
+   * Decodes one frame from the head of {@code bytes}. Returns null when more bytes are needed.
+   * Throws {@link ChannelException} for frames that declare a payload above {@code maxPayload}
+   * (including 64-bit lengths with the top bit set), so the caller can drop the connection before
+   * buffering the payload.
+   */
+  static Frame decode(byte[] bytes, int length, int maxPayload) {
     if (length < 2) {
       return null;
     }
@@ -90,10 +105,6 @@ final class WebSocketSupport {
     var first = bytes[0] & 0xFF;
     var second = bytes[1] & 0xFF;
     var fin = (first & 0x80) != 0;
-    if (!fin) {
-      throw new ChannelException("fragmented websocket frames are not supported");
-    }
-
     var opcode = first & 0x0F;
     var masked = (second & 0x80) != 0;
     long payloadLength = second & 0x7F;
@@ -114,9 +125,10 @@ final class WebSocketSupport {
         payloadLength = (payloadLength << 8) | (bytes[cursor + i] & 0xFFL);
       }
       cursor += 8;
-      if (payloadLength > Integer.MAX_VALUE) {
-        throw new ChannelException("websocket frame too large");
-      }
+    }
+    // A 64-bit length with the top bit set wraps negative: reject it together with oversized ones.
+    if (payloadLength < 0 || payloadLength > maxPayload) {
+      throw new ChannelException("websocket frame too large");
     }
 
     byte[] mask = null;
@@ -128,7 +140,7 @@ final class WebSocketSupport {
       cursor += 4;
     }
 
-    if (length < cursor + payloadLength) {
+    if ((long) length < cursor + payloadLength) {
       return null;
     }
 
@@ -140,10 +152,71 @@ final class WebSocketSupport {
       }
     }
 
-    return new Frame(opcode, payload, cursor + payload.length);
+    return new Frame(fin, opcode, payload, cursor + payload.length);
   }
 
-  record Frame(int opcode, byte[] payload, int consumed) {
+  /**
+   * Reassembles fragmented messages (RFC 6455 section 5.4): a data frame with FIN=0 followed by
+   * continuation frames (opcode 0), with control frames allowed in between. Returns complete
+   * messages and control frames; returns null while a message is still incomplete.
+   */
+  static final class MessageAssembler {
+    private final int maxPayload;
+    private int opcode = -1;
+    private byte[] buffer = new byte[0];
+    private int size;
+
+    MessageAssembler(int maxPayload) {
+      this.maxPayload = maxPayload;
+    }
+
+    Frame accept(Frame frame) {
+      var op = frame.opcode();
+      if (op >= 0x8) {
+        if (!frame.fin() || frame.payload().length > 125) {
+          throw new ChannelException("invalid websocket control frame");
+        }
+        return frame;
+      }
+      if (op == 0x0) {
+        if (opcode < 0) {
+          throw new ChannelException("unexpected websocket continuation frame");
+        }
+        append(frame.payload());
+        if (!frame.fin()) {
+          return null;
+        }
+        var message = new Frame(true, opcode, java.util.Arrays.copyOf(buffer, size), frame.consumed());
+        opcode = -1;
+        buffer = new byte[0];
+        size = 0;
+        return message;
+      }
+      if (opcode >= 0) {
+        throw new ChannelException("new websocket message before the previous one finished");
+      }
+      if (frame.fin()) {
+        return frame;
+      }
+      opcode = op;
+      size = 0;
+      append(frame.payload());
+      return null;
+    }
+
+    private void append(byte[] data) {
+      if ((long) size + data.length > maxPayload) {
+        throw new ChannelException("websocket message too large");
+      }
+      if (size + data.length > buffer.length) {
+        buffer = java.util.Arrays.copyOf(buffer, Math.max(size + data.length, buffer.length * 2));
+      }
+      System.arraycopy(data, 0, buffer, size, data.length);
+      size += data.length;
+    }
+  }
+
+  record Frame(boolean fin, int opcode, byte[] payload, int consumed) {
     String text() {
       return new String(payload, StandardCharsets.UTF_8);
     }

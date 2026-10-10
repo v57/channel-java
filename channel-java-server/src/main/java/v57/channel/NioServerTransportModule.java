@@ -118,19 +118,32 @@ public final class NioServerTransportModule implements ServerTransportProvider {
           if (connection == null) {
             continue;
           }
-          if (key.isReadable()) {
-            progressed = connection.read() || progressed;
-          }
-          if (!key.isValid()) {
-            continue;
-          }
-          if (key.isWritable()) {
-            progressed = connection.write() || progressed;
+          // Contain per-connection failures (bad handshake, malformed frame or message, deep JSON)
+          // to that connection: drop it and keep serving everyone else.
+          try {
+            if (key.isReadable()) {
+              progressed = connection.read() || progressed;
+            }
+            if (!key.isValid()) {
+              continue;
+            }
+            if (key.isWritable()) {
+              progressed = connection.write() || progressed;
+            }
+          } catch (RuntimeException | StackOverflowError error) {
+            connection.shutdown(true);
+            progressed = true;
           }
         }
 
         for (var connection : new ArrayList<>(connections.values())) {
-          progressed = connection.pollLocalStreams() || progressed;
+          try {
+            progressed = connection.pollLocalStreams() || progressed;
+          } catch (RuntimeException | StackOverflowError error) {
+            connection.shutdown(true);
+            progressed = true;
+            continue;
+          }
           if (!connection.isOpen()) {
             continue;
           }
@@ -175,6 +188,7 @@ public final class NioServerTransportModule implements ServerTransportProvider {
     private final ArrayDeque<ByteBuffer> outbound = new ArrayDeque<>();
     private final ByteBuffer readBuffer = ByteBuffer.allocate(16_384);
 
+    private final WebSocketSupport.MessageAssembler assembler;
     private byte[] inbound = new byte[16_384];
     private int inboundLength;
     private Peer<State> peer;
@@ -187,6 +201,7 @@ public final class NioServerTransportModule implements ServerTransportProvider {
       this.server = server;
       this.socket = socket;
       this.key = key;
+      this.assembler = new WebSocketSupport.MessageAssembler(server.options.maxPayload());
     }
 
     boolean isOpen() {
@@ -251,10 +266,19 @@ public final class NioServerTransportModule implements ServerTransportProvider {
         readBuffer.get(inbound, inboundLength, read);
         inboundLength += read;
         progressed = true;
+        // Stop reading once a full frame's worth is buffered; decoding below consumes it (or rejects
+        // an oversized header) before the next read, so the buffer stays bounded.
+        if (inboundLength >= readLimit()) {
+          break;
+        }
       }
 
       if (!handshakeComplete) {
         progressed = finishHandshakeIfReady() || progressed;
+        if (!handshakeComplete && inboundLength > WebSocketSupport.MAX_HANDSHAKE_BYTES) {
+          shutdown(true);
+          return true;
+        }
       }
       if (handshakeComplete && open) {
         progressed = decodeFrames() || progressed;
@@ -355,19 +379,28 @@ public final class NioServerTransportModule implements ServerTransportProvider {
       return true;
     }
 
+    private int readLimit() {
+      return (int) Math.min(Integer.MAX_VALUE / 2, (long) server.options.maxPayload() + WebSocketSupport.MAX_HANDSHAKE_BYTES);
+    }
+
     private boolean decodeFrames() {
       var progressed = false;
-      while (inboundLength > 0) {
-        var frame = WebSocketSupport.decode(inbound, inboundLength);
-        if (frame == null) {
+      while (inboundLength > 0 && open) {
+        var raw = WebSocketSupport.decode(inbound, inboundLength, server.options.maxPayload());
+        if (raw == null) {
           return progressed;
         }
 
-        consume(frame.consumed());
+        consume(raw.consumed());
         progressed = true;
+        var frame = assembler.accept(raw);
+        if (frame == null) {
+          continue;
+        }
 
         switch (frame.opcode()) {
-          case 0x1 -> {
+          // Binary messages are decoded as UTF-8 JSON too (same as channel-kotlin).
+          case 0x1, 0x2 -> {
             peer.handlePayload(frame.text());
             progressed = peer.pollLocalStreams() || progressed;
           }

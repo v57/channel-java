@@ -8,6 +8,7 @@ import org.junit.platform.suite.api.Suite;
     AProcessParityTest.class,
     BWebSocketParityTest.class,
     CTsInteropTest.class,
+    DHostileInputTest.class,
 })
 public class AllTestsSuite {
 }

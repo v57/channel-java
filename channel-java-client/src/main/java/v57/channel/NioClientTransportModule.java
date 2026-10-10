@@ -18,7 +18,7 @@ public final class NioClientTransportModule implements ClientTransportProvider {
   public <State> ChannelClient<State> connect(Channel<State> channel, String address, ConnectOptions<State> options) {
     var safeOptions = options == null ? new ConnectOptions<State>() : options;
     var target = ClientTarget.parse(address);
-    var transport = ClientSocketTransport.open(target, safeOptions.headers());
+    var transport = ClientSocketTransport.open(target, safeOptions.headers(), safeOptions.maxPayload());
     var peer = new Peer<>(channel, safeOptions.state(), transport);
     transport.attach(peer);
     PumpRegistry.register(transport);
@@ -64,6 +64,8 @@ public final class NioClientTransportModule implements ClientTransportProvider {
     private final ArrayDeque<ByteBuffer> outbound = new ArrayDeque<>();
     private final ByteBuffer readBuffer = ByteBuffer.allocate(16_384);
     private final ArrayDeque<String> pendingText = new ArrayDeque<>();
+    private final int maxPayload;
+    private final WebSocketSupport.MessageAssembler assembler;
 
     private byte[] inbound = new byte[16_384];
     private int inboundLength;
@@ -74,20 +76,22 @@ public final class NioClientTransportModule implements ClientTransportProvider {
     private boolean handshakeComplete;
     private final String clientKey = WebSocketSupport.clientKey();
 
-    private ClientSocketTransport(ClientTarget target, Map<String, String> headers, SocketChannel socket, boolean tcpConnected) {
+    private ClientSocketTransport(ClientTarget target, Map<String, String> headers, SocketChannel socket, boolean tcpConnected, int maxPayload) {
       this.target = target;
       this.headers = headers;
       this.socket = socket;
       this.tcpConnected = tcpConnected;
+      this.maxPayload = maxPayload;
+      this.assembler = new WebSocketSupport.MessageAssembler(maxPayload);
     }
 
-    static ClientSocketTransport open(ClientTarget target, Map<String, String> headers) {
+    static ClientSocketTransport open(ClientTarget target, Map<String, String> headers, int maxPayload) {
       try {
         var socket = SocketChannel.open();
         socket.setOption(StandardSocketOptions.TCP_NODELAY, true);
         socket.configureBlocking(false);
         var connected = socket.connect(new InetSocketAddress(target.host(), target.port()));
-        return new ClientSocketTransport(target, headers == null ? Map.of() : Map.copyOf(headers), socket, connected);
+        return new ClientSocketTransport(target, headers == null ? Map.of() : Map.copyOf(headers), socket, connected, maxPayload);
       } catch (IOException error) {
         throw new ChannelException("failed to connect websocket client", error);
       }
@@ -134,7 +138,18 @@ public final class NioClientTransportModule implements ClientTransportProvider {
       if (!isOpen()) {
         return false;
       }
+      try {
+        return pollOnce();
+      } catch (RuntimeException | StackOverflowError error) {
+        // A hostile or broken server (bad handshake, malformed frame, undecodable message) only
+        // disconnects this client: pending calls settle with an error instead of the exception
+        // escaping into whoever happens to be pumping.
+        fail(error instanceof HandshakeException ? error.getMessage() : "disconnected");
+        return true;
+      }
+    }
 
+    private boolean pollOnce() {
       var localPeer = peer;
       var progressed = finishConnect();
       progressed = sendHandshakeIfReady() || progressed;
@@ -158,8 +173,12 @@ public final class NioClientTransportModule implements ClientTransportProvider {
 
     private void validateHandshake(String headersText, String clientKey) {
       var lines = headersText.split("\r\n");
-      if (lines.length == 0 || !lines[0].contains("101")) {
-        throw new ChannelException("websocket upgrade failed: " + headersText);
+      if (lines.length == 0 || !lines[0].contains(" 101")) {
+        var status = lines.length == 0 ? "" : lines[0].trim();
+        if (status.length() > 80) {
+          status = status.substring(0, 80);
+        }
+        throw new HandshakeException("websocket upgrade failed: " + status);
       }
 
       var headers = new LinkedHashMap<String, String>();
@@ -174,7 +193,7 @@ public final class NioClientTransportModule implements ClientTransportProvider {
 
       var accept = headers.get("sec-websocket-accept");
       if (!WebSocketSupport.acceptFor(clientKey).equals(accept)) {
-        throw new ChannelException("invalid websocket accept header");
+        throw new HandshakeException("invalid websocket accept header");
       }
     }
 
@@ -222,6 +241,9 @@ public final class NioClientTransportModule implements ClientTransportProvider {
       }
       var headerEnd = findHttpHeaderEnd(inbound, inboundLength);
       if (headerEnd < 0) {
+        if (inboundLength > WebSocketSupport.MAX_HANDSHAKE_BYTES) {
+          throw new HandshakeException("websocket upgrade failed: response head too large");
+        }
         return false;
       }
 
@@ -309,22 +331,35 @@ public final class NioClientTransportModule implements ClientTransportProvider {
         readBuffer.get(inbound, inboundLength, read);
         inboundLength += read;
         progressed = true;
+        // Let decodeFrames consume (or reject) what is buffered before reading more.
+        if (inboundLength >= readLimit()) {
+          return progressed;
+        }
       }
+    }
+
+    private int readLimit() {
+      return (int) Math.min(Integer.MAX_VALUE / 2, (long) maxPayload + WebSocketSupport.MAX_HANDSHAKE_BYTES);
     }
 
     private boolean decodeFrames() {
       var progressed = false;
-      while (inboundLength > 0) {
-        var frame = WebSocketSupport.decode(inbound, inboundLength);
-        if (frame == null) {
+      while (inboundLength > 0 && isOpen()) {
+        var raw = WebSocketSupport.decode(inbound, inboundLength, maxPayload);
+        if (raw == null) {
           return progressed;
         }
 
-        consume(frame.consumed());
+        consume(raw.consumed());
         progressed = true;
+        var frame = assembler.accept(raw);
+        if (frame == null) {
+          continue;
+        }
 
         switch (frame.opcode()) {
-          case 0x1 -> {
+          // Binary messages are decoded as UTF-8 JSON too (same as channel-kotlin).
+          case 0x1, 0x2 -> {
             if (handshakeComplete && peer != null) {
               peer.handlePayload(frame.text());
             }
@@ -349,9 +384,13 @@ public final class NioClientTransportModule implements ClientTransportProvider {
     }
 
     private void handleDisconnect() {
+      fail("disconnected");
+    }
+
+    private void fail(String reason) {
       var localPeer = peer;
       if (localPeer != null && isOpen()) {
-        localPeer.stop();
+        localPeer.stop(reason);
         return;
       }
       close();
@@ -386,6 +425,13 @@ public final class NioClientTransportModule implements ClientTransportProvider {
         }
       }
       return -1;
+    }
+  }
+
+  /** Upgrade rejected by the server; its message is surfaced to pending calls. */
+  private static final class HandshakeException extends RuntimeException {
+    HandshakeException(String message) {
+      super(message);
     }
   }
 }

@@ -309,7 +309,11 @@ final class PendingStream {
       synchronized (this) {
         payload = items.pollFirst();
         if (payload != null) {
-          return StreamNext.item(JsonCodec.decode(itemType, payload));
+          try {
+            return StreamNext.item(JsonCodec.decode(itemType, payload));
+          } catch (RuntimeException error) {
+            return StreamNext.remoteErr("invalid stream item");
+          }
         }
         if (error != null) {
           return StreamNext.remoteErr(error);
@@ -421,7 +425,12 @@ final class Peer<State> {
     if (pending.error() != null) {
       return CallResult.remoteErr(pending.error());
     }
-    return CallResult.ok(JsonCodec.decode(responseType, pending.bodyJson()));
+    try {
+      return CallResult.ok(JsonCodec.decode(responseType, pending.bodyJson()));
+    } catch (RuntimeException error) {
+      // A reply we cannot decode settles the call with an error instead of throwing out of send().
+      return CallResult.remoteErr("invalid response body");
+    }
   }
 
   <Req, Item, Ctx> Values<Item> openValues(
@@ -511,6 +520,11 @@ final class Peer<State> {
   }
 
   void stop() {
+    stop("disconnected");
+  }
+
+  /** Stops the peer and settles every pending call, stream and subscription with {@code reason}. */
+  void stop(String reason) {
     if (stopped) {
       return;
     }
@@ -518,13 +532,13 @@ final class Peer<State> {
     transport.close();
 
     for (var pending : pendingCalls.values()) {
-      pending.completeError("disconnected");
+      pending.completeError(reason);
     }
     for (var pending : pendingStreams.values()) {
-      pending.accept(WireMessage.error(0, "disconnected"));
+      pending.accept(WireMessage.error(0, reason));
     }
     for (var pending : pendingSubscriptions.values()) {
-      pending.completeError("disconnected");
+      pending.completeError(reason);
     }
     pendingCalls.clear();
     pendingStreams.clear();

@@ -13,6 +13,9 @@ public final class JsonCodec {
   );
   private static final ThreadLocal<JsonWriter> WRITER = ThreadLocal.withInitial(JSON::newWriter);
 
+  /** Deepest array/object nesting accepted when decoding; deeper input would overflow dsl-json's recursive reader. */
+  static final int MAX_DEPTH = 512;
+
   static final TypeRef<Void> VOID = TypeRef.of(Void.class);
   static final TypeRef<Object> DYNAMIC = TypeRef.raw(Object.class);
 
@@ -54,6 +57,7 @@ public final class JsonCodec {
       return null;
     }
     var bytes = json.getBytes(StandardCharsets.UTF_8);
+    checkDepth(bytes);
     try {
       var reader = JSON.newReader(bytes, bytes.length);
       reader.getNextToken();
@@ -77,10 +81,35 @@ public final class JsonCodec {
     }
 
     var bytes = json.getBytes(StandardCharsets.UTF_8);
+    checkDepth(bytes);
     try {
       return (T) JSON.deserialize(type.type(), bytes, bytes.length);
     } catch (IOException error) {
       throw new ChannelException("failed to decode typed json", error);
+    }
+  }
+
+  /** Rejects input nested deeper than {@link #MAX_DEPTH} before handing it to the recursive parser. */
+  static void checkDepth(byte[] bytes) {
+    var depth = 0;
+    var inString = false;
+    for (var i = 0; i < bytes.length; i += 1) {
+      var b = bytes[i];
+      if (inString) {
+        if (b == '\\') {
+          i += 1;
+        } else if (b == '"') {
+          inString = false;
+        }
+      } else if (b == '"') {
+        inString = true;
+      } else if (b == '[' || b == '{') {
+        if (++depth > MAX_DEPTH) {
+          throw new ChannelException("json nesting too deep");
+        }
+      } else if (b == ']' || b == '}') {
+        depth -= 1;
+      }
     }
   }
 
