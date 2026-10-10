@@ -11,7 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 final class TsServerFixture implements AutoCloseable {
-  private static final File ROOT = resolveChannelRoot();
+
 
   private static File resolveChannelRoot() {
     var configured = System.getenv("CHANNEL_TS_ROOT");
@@ -19,20 +19,16 @@ final class TsServerFixture implements AutoCloseable {
       return new File(configured);
     }
 
-    // Prefer the sibling of this repo (monorepo layout), falling back to the
-    // historical absolute path used by earlier checkouts.
-    var fromRepo = new File(System.getProperty("user.dir")).getParentFile();
-    var candidates = new File[] {
-      fromRepo == null ? null : new File(fromRepo, "channel"),
-      new File("/Users/v57/github/channels/channel"),
-      new File("/Users/dimas/github/hub/channels/channel"),
-    };
-    for (var candidate : candidates) {
-      if (candidate != null && new File(candidate, "tests/server.ts").isFile()) {
+    // Walk up from the working directory (Gradle runs tests from channel-java/channel-java-tests)
+    // until a sibling `channel/tests/server.ts` is found, e.g. Hub/Channel/channel.
+    for (var dir = new File(System.getProperty("user.dir")).getAbsoluteFile(); dir != null; dir = dir.getParentFile()) {
+      var candidate = new File(dir, "channel");
+      if (new File(candidate, "tests/server.ts").isFile()) {
         return candidate;
       }
     }
-    return new File("/Users/dimas/github/hub/channels/channel");
+    throw new IllegalStateException(
+        "could not find channel/tests/server.ts above " + System.getProperty("user.dir") + "; set CHANNEL_TS_ROOT");
   }
 
   private Process process;
@@ -44,10 +40,15 @@ final class TsServerFixture implements AutoCloseable {
       return;
     }
 
+    if (isPortOpen("127.0.0.1", 2049)) {
+      // A fixture is already serving 127.0.0.1:2049 (e.g. started by another runner): reuse it.
+      return;
+    }
+
     try {
       var bun = resolveBun();
       var builder = new ProcessBuilder(bun, "tests/server.ts");
-      builder.directory(ROOT);
+      builder.directory(resolveChannelRoot());
       builder.redirectErrorStream(true);
       process = builder.start();
 
@@ -86,6 +87,15 @@ final class TsServerFixture implements AutoCloseable {
         throw new IllegalStateException("bun was not found on PATH");
       }
       return line.trim();
+    }
+  }
+
+  private static boolean isPortOpen(String host, int port) {
+    try (var socket = new Socket()) {
+      socket.connect(new InetSocketAddress(host, port), 100);
+      return true;
+    } catch (Exception ignored) {
+      return false;
     }
   }
 
