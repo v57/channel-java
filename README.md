@@ -14,6 +14,11 @@ implementation("v57.channel:channel-java-core:VERSION")
 implementation("v57.channel:channel-java-client:VERSION")
 ```
 
+# Dependencies
+
+[dsl-json](https://github.com/ngs-doo/dsl-json) (`dsl-json`, `dsl-json-java8`) for JSON. The WebSocket client and
+server are written on Java NIO. The core module also declares `slf4j-api`, which the code doesn't use yet.
+
 # Usage
 
 ```java
