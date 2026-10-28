@@ -85,8 +85,8 @@ deeper than 512 levels is disconnected; on the client, pending calls then fail w
 ```
 
 # Environment
-If Java is not configured on PATH, scripts default to:
-- `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home`
+In the Hub checkout the scripts run in its toolchain container (`../../HubTools/hub-run`), which has
+all of these. Elsewhere they use `JAVA_HOME`, or `java` on PATH.
 
 Required tools:
 - JDK 21
