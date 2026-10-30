@@ -95,7 +95,7 @@ dials each connection from its own UDP socket. The headers go in the first frame
 uses them, lowercased, like the WebSocket upgrade headers. Frames above `withMaxPayload` (16 MiB) close the connection;
 idle connections close after 30 s, and the client sends a keepalive every 15 s. Like the WebSocket client, the QUIC
 client doesn't reconnect: when the connection drops, pending calls fail with `disconnected`. 0-RTT is off: the server
-issues no session tickets. Which languages support QUIC: see `channel/docs/quic.md`.
+issues no session tickets. Languages with QUIC: TypeScript, Go, Swift, C#, Rust, Python, Elixir, Java, Kotlin, C and Zig; Dart, Ruby and PHP stay on WebSocket (libraries and status in `channel/docs/quic.md`).
 
 # Modules
 - `channel-java-core`
