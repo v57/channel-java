@@ -148,8 +148,9 @@ public final class Channel<State> {
     return connect(address, new ConnectOptions<>());
   }
 
+  /** Connects to {@code ws://host:port} (module {@code channel-java-client}) or {@code quic://host:port} ({@code channel-java-quic}). */
   public ChannelClient<State> connect(String address, ConnectOptions<State> options) {
-    return provider(ClientTransportProvider.class, "channel-java-client").connect(this, address, options);
+    return clientProvider(address).connect(this, address, options);
   }
 
   public ChannelServer<State> listen(int port) {
@@ -162,6 +163,15 @@ public final class Channel<State> {
 
   public ChannelServer<State> listen(String host, int port, ListenOptions<State> options) {
     return provider(ServerTransportProvider.class, "channel-java-server").listen(this, host, port, options);
+  }
+
+  /** Serves this channel over QUIC on 127.0.0.1 (module {@code channel-java-quic}); {@code options} must carry a certificate. */
+  public ChannelServer<State> listenQuic(int port, ListenOptions<State> options) {
+    return listenQuic("127.0.0.1", port, options);
+  }
+
+  public ChannelServer<State> listenQuic(String host, int port, ListenOptions<State> options) {
+    return provider(QuicServerTransportProvider.class, "channel-java-quic").listenQuic(this, host, port, options);
   }
 
   PostBinding<State> lookupPost(String path) {
@@ -245,6 +255,28 @@ public final class Channel<State> {
     return ServiceLoader.load(type)
         .findFirst()
         .orElseThrow(() -> new ChannelException("missing transport module: " + moduleName));
+  }
+
+  private static ClientTransportProvider clientProvider(String address) {
+    var separator = address == null ? -1 : address.indexOf("://");
+    var scheme = separator < 0 ? "" : address.substring(0, separator).toLowerCase(java.util.Locale.ROOT);
+    ClientTransportProvider first = null;
+    for (var provider : ServiceLoader.load(ClientTransportProvider.class)) {
+      if (provider.supports(scheme)) {
+        return provider;
+      }
+      if (first == null) {
+        first = provider;
+      }
+    }
+    if ("quic".equals(scheme)) {
+      throw new ChannelException("missing transport module: channel-java-quic");
+    }
+    if (first == null || "ws".equals(scheme)) {
+      throw new ChannelException("missing transport module: channel-java-client");
+    }
+    // Lets the transport reject the address with its own message
+    return first;
   }
 
   private static Predicate<String> prefixedMatcher(String prefix, Predicate<String> matcher) {

@@ -8,10 +8,13 @@ dependencies {
   implementation(project(":channel-java-client"))
   implementation(project(":channel-java-server"))
   implementation(project(":channel-java-process"))
+  implementation(project(":channel-java-quic"))
 
   testImplementation(platform("org.junit:junit-bom:5.10.2"))
   testImplementation("org.junit.jupiter:junit-jupiter")
   testImplementation("org.junit.platform:junit-platform-suite:1.10.2")
+  // A raw QUIC client for the wire-rule tests
+  testImplementation("tech.kwik:kwik:0.12.1")
 }
 
 val coveredProjects = listOf(
@@ -19,6 +22,7 @@ val coveredProjects = listOf(
   project(":channel-java-client"),
   project(":channel-java-server"),
   project(":channel-java-process"),
+  project(":channel-java-quic"),
 )
 
 tasks.test {

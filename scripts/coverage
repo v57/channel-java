@@ -6,7 +6,7 @@ hub_run="$(dirname "$0")/../../../HubTools/hub-run"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-./gradlew --no-daemon clean :channel-java-tests:test --tests v57.channel.tests.AllTestsSuite :channel-java-tests:jacocoTestReport
+./gradlew --no-daemon clean :channel-java-quic:test :channel-java-tests:test --tests v57.channel.tests.AllTestsSuite :channel-java-tests:jacocoTestReport
 
 XML_REPORT="$ROOT/channel-java-tests/build/reports/jacoco/test/jacocoTestReport.xml"
 LCOV_OUT="$ROOT/coverage/lcov.info"
@@ -19,7 +19,8 @@ python3 "$ROOT/scripts/jacoco_to_lcov.py" \
   --module "$ROOT/channel-java-core" \
   --module "$ROOT/channel-java-client" \
   --module "$ROOT/channel-java-server" \
-  --module "$ROOT/channel-java-process"
+  --module "$ROOT/channel-java-process" \
+  --module "$ROOT/channel-java-quic"
 
 if [[ ! -s "$LCOV_OUT" ]]; then
   echo "coverage conversion failed: $LCOV_OUT is missing or empty" >&2

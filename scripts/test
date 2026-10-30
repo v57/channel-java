@@ -6,4 +6,4 @@ hub_run="$(dirname "$0")/../../../HubTools/hub-run"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-./gradlew --no-daemon :channel-java-tests:test --tests v57.channel.tests.AllTestsSuite
+./gradlew --no-daemon :channel-java-quic:test :channel-java-tests:test --tests v57.channel.tests.AllTestsSuite

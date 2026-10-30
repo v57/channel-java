@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class TsServerFixture implements AutoCloseable {
 
 
-  private static File resolveChannelRoot() {
+  static File resolveChannelRoot() {
     var configured = System.getenv("CHANNEL_TS_ROOT");
     if (configured != null && !configured.isBlank()) {
       return new File(configured);

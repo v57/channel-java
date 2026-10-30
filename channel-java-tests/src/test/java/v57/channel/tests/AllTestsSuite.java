@@ -9,6 +9,7 @@ import org.junit.platform.suite.api.Suite;
     BWebSocketParityTest.class,
     CTsInteropTest.class,
     DHostileInputTest.class,
+    EQuicTest.class,
 })
 public class AllTestsSuite {
 }
