@@ -113,7 +113,7 @@ issues no session tickets. Which languages support QUIC: see `channel/docs/quic.
 
 # Scripts
 - `scripts/test` - runs full test suite (TS-server interop tests first, then Java-server tests, then QUIC). The QUIC
-  interop test calls the TS fixture on `CHANNEL_TEST_PORT` (default 2105) and skips when it isn't running there
+  interop test calls the TS fixture on `CHANNEL_TEST_PORT` (default 2049) and skips when it isn't running there
 - `scripts/benchmark` - runs process + Java WS + TS WS benchmarks
 - `scripts/coverage` - runs tests and outputs LCOV report to `coverage/lcov.info`
 
@@ -137,5 +137,4 @@ Required tools:
 Integration tests use:
 - `../channel/tests/server.ts`
 - WebSocket endpoint: `127.0.0.1:2049`
-- QUIC endpoint: UDP `127.0.0.1:$CHANNEL_TEST_PORT` (default 2105), started with
-  `CHANNEL_TEST_PORT=2105 bun tests/server.ts`
+- QUIC endpoint: UDP `127.0.0.1:2049` (or `$CHANNEL_TEST_PORT`), the same fixture on UDP

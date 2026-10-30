@@ -421,7 +421,7 @@ public class EQuicTest {
   /** The fixture's port: `CHANNEL_TEST_PORT` bun tests/server.ts serves QUIC on UDP next to its WebSocket on TCP. */
   private static int tsPort() {
     var configured = System.getenv("CHANNEL_TEST_PORT");
-    return configured == null || configured.isBlank() ? 2105 : Integer.parseInt(configured.trim());
+    return configured == null || configured.isBlank() ? 2049 : Integer.parseInt(configured.trim());
   }
 
   private static boolean tcpOpen(int port) {
